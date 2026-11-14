@@ -4,47 +4,74 @@ module.exports = async (req, res) => {
     return res.status(405).send("Method not allowed");
   }
 
-  const expectedSecret = process.env.POSTBACK_SECRET;
-  const receivedSecret = req.query.secret;
+  const {
+    secret,
+    ymid,
+    event_type,
+    reward_event_type,
+    telegram_id
+  } = req.query;
 
-  if (!expectedSecret) {
-    console.error("POSTBACK_SECRET is missing");
-    return res.status(500).send("Server configuration error");
-  }
-
-  if (!receivedSecret || receivedSecret !== expectedSecret) {
+  if (!process.env.POSTBACK_SECRET ||
+      secret !== process.env.POSTBACK_SECRET) {
     return res.status(403).send("Invalid secret");
   }
 
-  const {
-    ymid,
-    event_type,
-    reward_event_type,
-    zone_id,
-    sub_zone_id,
-    telegram_id,
-    estimated_price,
-    request_var
-  } = req.query;
-
-  if (
-    !ymid ||
-    !["impression", "click"].includes(event_type) ||
-    !["valued", "non_valued"].includes(reward_event_type)
-  ) {
-    return res.status(400).send("Invalid postback data");
+  if (!ymid || !telegram_id ||
+      !/^\d+$/.test(String(telegram_id))) {
+    return res.status(400).send("Missing or invalid data");
   }
 
-  console.log("MONETAG POSTBACK:", {
-    ymid,
-    event_type,
-    reward_event_type,
-    zone_id,
-    sub_zone_id,
-    telegram_id,
-    estimated_price,
-    request_var
-  });
+  if (event_type !== "impression" ||
+      reward_event_type !== "valued") {
+    return res.status(200).send("No reward for this event");
+  }
 
-  return res.status(200).send("Postback received");
+  const url = process.env.KV_REST_API_URL;
+  const token = process.env.KV_REST_API_TOKEN;
+
+  if (!url || !token) {
+    return res.status(500).send("Redis configuration missing");
+  }
+
+  const script = `
+    if redis.call("EXISTS", KEYS[1]) == 1 then
+      return 0
+    end
+    redis.call("SET", KEYS[1], ARGV[1])
+    redis.call("SET", KEYS[2], "unlocked")
+    return 1
+  `;
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + token,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify([
+        "EVAL",
+        script,
+        "2",
+        "reward:" + ymid,
+        "patient:" + telegram_id + ":access",
+        String(telegram_id)
+      ])
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || result.error) {
+      console.error("Redis error:", result);
+      return res.status(500).send("Database error");
+    }
+
+    return res.status(200).send(
+      result.result === 1 ? "Reward saved" : "Duplicate ignored"
+    );
+  } catch (error) {
+    console.error(error);
+    return res.status(500).send("Server error");
+  }
 };
