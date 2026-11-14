@@ -19,12 +19,15 @@ module.exports = async (req, res) => {
 
   if (!ymid || !telegram_id ||
       !/^\d+$/.test(String(telegram_id))) {
-    return res.status(400).send("Missing or invalid data");
+    return res.status(400).send("Invalid postback data");
   }
 
-  if (event_type !== "impression" ||
-      reward_event_type !== "valued") {
-    return res.status(200).send("No reward for this event");
+  if (!["impression", "click"].includes(event_type)) {
+    return res.status(400).send("Invalid event");
+  }
+
+  if (reward_event_type !== "valued") {
+    return res.status(200).send("No reward");
   }
 
   const url = process.env.KV_REST_API_URL;
@@ -68,8 +71,11 @@ module.exports = async (req, res) => {
     }
 
     return res.status(200).send(
-      result.result === 1 ? "Reward saved" : "Duplicate ignored"
+      result.result === 1
+        ? "Reward saved"
+        : "Duplicate ignored"
     );
+
   } catch (error) {
     console.error(error);
     return res.status(500).send("Server error");
